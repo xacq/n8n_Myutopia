@@ -1,0 +1,692 @@
+{
+  "name": "Myutopia - 02 Scheduler Toques",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "7a9cac84-f924-49c9-8ff3-923630854562",
+      "name": "Schedule - Diario 09:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst jiraFields = {\n  canalSeguimiento: 'customfield_10040',\n  fechaDiagnostico: 'customfield_10041',\n  tierPropuesto: 'customfield_10042',\n  agenteIa: 'customfield_10043',\n  importeSetup: 'customfield_10044',\n  numeroToque: 'customfield_10045',\n  proximaAccion: 'customfield_10046',\n  fechaVencimiento: 'customfield_10047',\n  notas: 'customfield_10048',\n  sentimiento: 'customfield_10049',\n  resumenConversacion: 'customfield_10050',\n  fechaUltimoContacto: 'customfield_10051',\n  emailLead: 'customfield_10052',\n  telefonoWhatsapp: 'customfield_10053',\n  empresa: 'customfield_10054',\n  nombreContacto: 'customfield_10055',\n  gmailThreadId: 'customfield_10056',\n  ultimoMessageIdProcesado: 'customfield_10057',\n  errorTecnico: 'customfield_10058'\n};\n\nconst config = {\n  jiraBaseUrl: 'https://greenpc.atlassian.net',\n  projectKey: 'REEMPLAZAR_PROJECT_KEY',\n  adminEmail: 'REEMPLAZAR_ADMIN_EMAIL',\n  openaiModel: 'o4-mini',\n  whatsappMode: 'simulado',\n  whatsappWebhookUrl: 'REEMPLAZAR_WHATSAPP_WEBHOOK_URL',\n  timezone: 'Europe/Madrid',\n  businessHours: {\n    start: 9,\n    end: 18,\n    days: [1, 2, 3, 4, 5]\n  },\n  confidenceThreshold: {\n    auto: 0.80,\n    review: 0.60\n  }\n};\n\nreturn items.map(item => ({ json: { ...item.json, jiraFields, config } }));\n"
+      },
+      "id": "c4b22037-e768-4e04-8dc6-f28652414595",
+      "name": "Config Jira + campos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst jql = `project = \"${$json.config.projectKey}\" AND status in (\"Diagnóstico realizado\", \"Sin responder\") AND cf[10047] <= now() AND status not in (\"Propuesta aceptada\", \"Firmado\", \"Descartado\")`;\nreturn [{ json: { ...$json, schedulerJql: jql, schedulerUrl: `${$json.config.jiraBaseUrl}/rest/api/3/search?jql=${encodeURIComponent(jql)}&maxResults=50` } }];\n"
+      },
+      "id": "c88050e9-bcf5-45a2-b0aa-3b3b39d23c56",
+      "name": "Construir JQL vencidos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$json.schedulerUrl}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "e17b3525-7592-400f-9a77-ed5486c3949a",
+      "name": "Jira - Buscar tickets vencidos",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        300
+      ],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "REEMPLAZAR_CREDENCIAL_JIRA_BASIC",
+          "name": "REEMPLAZAR_CREDENCIAL_JIRA_BASIC"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst base = $items('Config Jira + campos')[0].json;\nconst issues = $json.issues || [];\nreturn issues.map(issue => ({ json: { ...base, issueKey: issue.key, issueId: issue.id, fields: issue.fields } }));\n"
+      },
+      "id": "2b305bca-caa8-4d78-bcaf-97e1ae6b8613",
+      "name": "Separar issues",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst f = $json.jiraFields;\nconst fields = $json.fields || {};\nconst currentTouch = fields[f.numeroToque]?.value || 'T1 pendiente';\nconst canal = fields[f.canalSeguimiento]?.value || 'Email';\nconst nombre = fields[f.nombreContacto] || 'Hola';\nconst herramienta = fields[f.agenteIa] || 'vuestros sistemas';\nconst email = fields[f.emailLead] || '';\nconst telefono = fields[f.telefonoWhatsapp] || '';\n\nlet action = null;\nlet nextTouch = null;\nlet nextDueDays = null;\nlet sendChannel = canal;\n\nif (currentTouch === 'Sin toque' || currentTouch === 'T1 pendiente' || !currentTouch) {\n  action = 'send_touch_1';\n  nextTouch = 'T1 enviado';\n  nextDueDays = 5;\n  sendChannel = canal;\n} else if (currentTouch === 'T1 enviado' || currentTouch === 'T2 pendiente') {\n  action = 'send_touch_2';\n  nextTouch = 'T2 enviado';\n  nextDueDays = 10;\n  sendChannel = canal;\n} else if (currentTouch === 'T2 enviado' || currentTouch === 'T3 pendiente') {\n  action = 'send_touch_3';\n  nextTouch = 'T3 enviado';\n  nextDueDays = 3;\n  sendChannel = 'WhatsApp';\n} else if (currentTouch === 'T3 enviado' || currentTouch === 'Cierre pendiente') {\n  action = 'close_no_response';\n  nextTouch = 'Cerrado por silencio';\n  nextDueDays = null;\n  sendChannel = null;\n} else {\n  action = 'skip';\n}\n\nconst due = new Date();\nif (nextDueDays !== null) due.setDate(due.getDate() + nextDueDays);\nconst nextDueDate = nextDueDays !== null ? due.toISOString().slice(0, 10) : null;\n\nlet subject = '';\nlet body = '';\n\nif (action === 'send_touch_1') {\n  subject = `¿Has podido revisar la propuesta, ${nombre}?`;\n  body = `Hola ${nombre},\n\nTe escribo para saber si has podido revisar la propuesta que te enviamos tras la sesión con José Luis.\n\nSi tienes cualquier duda sobre la solución, los plazos o algún otro punto, dime y lo vemos sin problema. Y si os viene bien una llamada rápida con el equipo técnico para que os expliquen cómo quedaría exactamente en vuestro caso, también la organizo encantado.\n\nUn saludo,\nAlberto · Myutopia`;\n}\n\nif (action === 'send_touch_2') {\n  subject = `Una idea para ayudarte a decidir, ${nombre}`;\n  body = `Hola ${nombre},\n\nQuería retomar el contacto por si os ha surgido alguna duda sobre la propuesta.\n\nA veces, lo que más ayuda antes de tomar la decisión es una llamada de 20 minutos con nuestros developers, para que os expliquen exactamente cómo se integraría el agente con ${herramienta}. Sin compromiso, solo para que lo veáis claro.\n\nSi te viene bien, dime y lo agendo esta misma semana.\n\nUn saludo,\nAlberto · Myutopia`;\n}\n\nif (action === 'send_touch_3') {\n  body = `Hola ${nombre}, último mensaje de mi parte para no saturarte 🙂\n\n¿Seguís evaluando la propuesta o lo habéis aparcado por ahora?\n\nSin ningún problema en cualquier caso. Si no es el momento, lo entiendo perfectamente y lo retomamos cuando tenga sentido para vosotros. Solo quería cerrar el seguimiento por mi parte y no dejarte el tema en el aire.`;\n}\n\nlet route = 'skip';\nif (action === 'close_no_response') route = 'close';\nelse if (sendChannel === 'Email') route = 'email';\nelse if (sendChannel === 'WhatsApp' || sendChannel === 'Ambos') route = 'whatsapp';\n\nreturn [{ json: { ...$json, currentTouch, touchAction: action, nextTouch, nextDueDate, sendChannel, route, touchSubject: subject, touchBody: body, leadEmail: email, telefonoWhatsapp: telefono, nombreContacto: nombre } }];\n"
+      },
+      "id": "bc6b4639-8f11-4857-a6ce-ed35782245fc",
+      "name": "Decidir toque y plantilla",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.route}}",
+                    "rightValue": "email",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.route}}",
+                    "rightValue": "whatsapp",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.route}}",
+                    "rightValue": "close",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "e5320fd3-b53b-4275-8b27-ac63a4f8835c",
+      "name": "Switch ruta toque",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        1440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "sendTo": "={{$json.leadEmail}}",
+        "subject": "={{$json.touchSubject}}",
+        "message": "={{$json.touchBody}}",
+        "options": {}
+      },
+      "id": "387605fe-f5aa-46fe-bf92-2992c395a43e",
+      "name": "Gmail - Enviar toque email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1680,
+        120
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REEMPLAZAR_CREDENCIAL_GMAIL",
+          "name": "REEMPLAZAR_CREDENCIAL_GMAIL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$json.config.whatsappWebhookUrl}}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"phone\":\"{{$json.telefonoWhatsapp}}\",\"message\":\"{{$json.touchBody}}\",\"issueKey\":\"{{$json.issueKey}}\",\"mode\":\"simulado\"}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "c3665306-b677-48df-9695-e329175a62a3",
+      "name": "WhatsApp - Enviar toque simulado",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1680,
+        300
+      ],
+      "notes": "Si no hay proveedor WhatsApp, usar webhook de prueba. Para producción, sustituir por WhatsApp Cloud API/Twilio/WATI/360dialog."
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst f = $json.jiraFields;\nconst today = new Date().toISOString().slice(0, 10);\nlet nextAction = '';\n\nif ($json.touchAction === 'send_touch_1') nextAction = 'Esperar respuesta tras Toque 1';\nif ($json.touchAction === 'send_touch_2') nextAction = 'Esperar respuesta tras Toque 2';\nif ($json.touchAction === 'send_touch_3') nextAction = 'Esperar respuesta tras Toque 3';\nif ($json.touchAction === 'close_no_response') nextAction = 'Lead descartado automáticamente por falta de respuesta';\n\nreturn [{\n  json: {\n    ...$json,\n    jiraUpdatePayload: {\n      fields: {\n        [f.numeroToque]: { value: $json.nextTouch },\n        [f.fechaVencimiento]: $json.nextDueDate,\n        [f.fechaUltimoContacto]: today,\n        [f.proximaAccion]: nextAction,\n        [f.resumenConversacion]: `Última acción automática: ${$json.touchAction}`\n      }\n    }\n  }\n}];\n"
+      },
+      "id": "6d466170-6955-41be-90bc-fd9b161d7174",
+      "name": "Construir update post toque",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1920,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{$json.config.jiraBaseUrl}}/rest/api/3/issue/{{$json.issueKey}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{JSON.stringify($json.jiraUpdatePayload)}}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "6777ccd0-ac10-4313-9c84-32c94b99801d",
+      "name": "Jira - Actualizar post toque",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2160,
+        220
+      ],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "REEMPLAZAR_CREDENCIAL_JIRA_BASIC",
+          "name": "REEMPLAZAR_CREDENCIAL_JIRA_BASIC"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst f = $json.jiraFields;\nreturn [{\n  json: {\n    ...$json,\n    jiraClosePayload: {\n      fields: {\n        [f.numeroToque]: { value: 'Cerrado por silencio' },\n        [f.fechaVencimiento]: null,\n        [f.proximaAccion]: 'Lead descartado automáticamente por falta de respuesta',\n        [f.resumenConversacion]: 'Lead descartado automáticamente tras completar la secuencia de 3 toques sin respuesta.'\n      }\n    },\n    closeCommentPayload: {\n      body: {\n        type: \"doc\",\n        version: 1,\n        content: [{ type: \"paragraph\", content: [{ type: \"text\", text: \"Lead movido a Descartado por falta de respuesta tras 3 toques.\" }] }]\n      }\n    }\n  }\n}];\n"
+      },
+      "id": "ee02efec-7990-4548-8631-111a039ab010",
+      "name": "Construir cierre por silencio",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{$json.config.jiraBaseUrl}}/rest/api/3/issue/{{$json.issueKey}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{JSON.stringify($json.jiraClosePayload)}}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "c3f6634e-39b2-4756-826e-f3936fb50602",
+      "name": "Jira - Actualizar cierre",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1920,
+        520
+      ],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "REEMPLAZAR_CREDENCIAL_JIRA_BASIC",
+          "name": "REEMPLAZAR_CREDENCIAL_JIRA_BASIC"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$json.config.jiraBaseUrl}}/rest/api/3/issue/{{$json.issueKey}}/comment",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{JSON.stringify($json.closeCommentPayload)}}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "d273a7ea-2b73-45b7-b8d4-6e6a37f90207",
+      "name": "Jira - Comentario cierre",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2160,
+        520
+      ],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "REEMPLAZAR_CREDENCIAL_JIRA_BASIC",
+          "name": "REEMPLAZAR_CREDENCIAL_JIRA_BASIC"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$json.config.jiraBaseUrl}}/rest/api/3/issue/{{$json.issueKey}}/transitions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "e18b2a7b-90a8-424f-8421-64a4db968ec6",
+      "name": "Jira - Transiciones cierre",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2400,
+        520
+      ],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "REEMPLAZAR_CREDENCIAL_JIRA_BASIC",
+          "name": "REEMPLAZAR_CREDENCIAL_JIRA_BASIC"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst base = $items('Construir cierre por silencio')[0].json;\nconst transitions = $json.transitions || [];\nconst transition = transitions.find(t => t.to && t.to.name === 'Descartado');\nreturn [{ json: { ...base, transitionId: transition ? transition.id : null, transitionFound: Boolean(transition) } }];\n"
+      },
+      "id": "0806c820-f153-40ef-8941-e47017f5cf6b",
+      "name": "Elegir transición Descartado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2640,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$json.transitionFound}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "c2db4d46-bb79-4b1f-967f-ad7d59e0a1c1",
+      "name": "IF Transición Descartado encontrada",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2880,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$json.config.jiraBaseUrl}}/rest/api/3/issue/{{$json.issueKey}}/transitions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"transition\":{\"id\":\"{{$json.transitionId}}\"}}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "4339cd79-f7e3-4b8d-82bd-74cfb7780787",
+      "name": "Jira - Mover a Descartado",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3120,
+        420
+      ],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "REEMPLAZAR_CREDENCIAL_JIRA_BASIC",
+          "name": "REEMPLAZAR_CREDENCIAL_JIRA_BASIC"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "sendTo": "={{$json.config.adminEmail}}",
+        "subject": "=Myutopia - Lead descartado por silencio {{$json.issueKey}}",
+        "message": "=El lead {{$json.issueKey}} fue movido a Descartado por falta de respuesta tras 3 toques.",
+        "options": {}
+      },
+      "id": "5fe58c80-b531-45e9-bb44-0d995be5e329",
+      "name": "Gmail - Alertar cierre por silencio",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        3360,
+        420
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REEMPLAZAR_CREDENCIAL_GMAIL",
+          "name": "REEMPLAZAR_CREDENCIAL_GMAIL"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule - Diario 09:00": {
+      "main": [
+        [
+          {
+            "node": "Config Jira + campos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config Jira + campos": {
+      "main": [
+        [
+          {
+            "node": "Construir JQL vencidos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Construir JQL vencidos": {
+      "main": [
+        [
+          {
+            "node": "Jira - Buscar tickets vencidos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Jira - Buscar tickets vencidos": {
+      "main": [
+        [
+          {
+            "node": "Separar issues",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Separar issues": {
+      "main": [
+        [
+          {
+            "node": "Decidir toque y plantilla",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decidir toque y plantilla": {
+      "main": [
+        [
+          {
+            "node": "Switch ruta toque",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch ruta toque": {
+      "main": [
+        [
+          {
+            "node": "Gmail - Enviar toque email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "WhatsApp - Enviar toque simulado",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Construir cierre por silencio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail - Enviar toque email": {
+      "main": [
+        [
+          {
+            "node": "Construir update post toque",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WhatsApp - Enviar toque simulado": {
+      "main": [
+        [
+          {
+            "node": "Construir update post toque",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Construir update post toque": {
+      "main": [
+        [
+          {
+            "node": "Jira - Actualizar post toque",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Construir cierre por silencio": {
+      "main": [
+        [
+          {
+            "node": "Jira - Actualizar cierre",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Jira - Actualizar cierre": {
+      "main": [
+        [
+          {
+            "node": "Jira - Comentario cierre",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Jira - Comentario cierre": {
+      "main": [
+        [
+          {
+            "node": "Jira - Transiciones cierre",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Jira - Transiciones cierre": {
+      "main": [
+        [
+          {
+            "node": "Elegir transición Descartado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Elegir transición Descartado": {
+      "main": [
+        [
+          {
+            "node": "IF Transición Descartado encontrada",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Transición Descartado encontrada": {
+      "main": [
+        [
+          {
+            "node": "Jira - Mover a Descartado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Jira - Mover a Descartado": {
+      "main": [
+        [
+          {
+            "node": "Gmail - Alertar cierre por silencio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Madrid"
+  },
+  "staticData": null,
+  "pinData": {},
+  "versionId": "b0fb1a70-7842-471a-ac32-f5ae9e7228e2",
+  "triggerCount": 1,
+  "tags": []
+}
